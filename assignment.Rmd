@@ -1,0 +1,248 @@
+```{r setting environment}
+library(dplyr)
+library(caret)
+rm(list=ls())
+```
+# Executive summary
+The question was raised if mpg of 1974 cars was influenced by transmission type. To answer the question a linear model was build based on mtcars data using a linear model that showed the relation between mpg on the one hand and weight, hp and transmission type on the other. It was shown that after compensating for weight and hp there was no statistical significant relation between mpg and transmission type.
+
+# Data preparation and assumptions
+The dataset contains the following information
+* Miles per gallon (mpg)
+* Number of cylinders (cyl)
+* Displacement (disp)
+* Gross horesepower (hp)
+* Rear axle ratio (drat)
+* weight (wt)
+* 0.25 mile time (qsec)
+* Engine (v-shaped or straight) (vs)
+* Transmision type (am)
+* Number of gears (gear)
+* Number of carburetors (carb)
+
+Mpg is the variable to be predicted. It was chosen to drop the 0.25 mile time (qsec) from the input variables becaus it is, like mpg, an outcome of the car's specs and not a design variable.
+
+The variables cyl, vs, am, gear and carb are taken as factors. The other variables as continuous variable.
+```{r data preparation, echo=TRUE}
+df <- mtcars
+df$cyl <- as.factor(df$cyl)
+df$vs <- as.factor(df$vs)
+df$am <- as.factor(df$am)
+df$gear <- as.factor(df$gear)
+df$carb <- as.factor(df$carb)
+
+df_plot <- df
+
+df_fit <- df
+df_fit$y <- df_fit$mpg
+df_fit <- df_fit[, which('mpg' != colnames(df_fit))]
+df_fit <- df_fit[, which('qsec' != colnames(df_fit))]
+```
+
+# Exploratory analysis
+When plotting a histogram of the mpg it can be seen that it looks a bit like a normal distribution with extremes at both sides of the spectrum
+
+```{r}
+hist(
+    df_plot$mpg,
+    breaks=15,
+    xlab="mpg",
+    ylab='Frequency',
+    main="Histogram of miles per gallon"
+    )
+```
+It can be seen that the lowest outliers have an mpg below 11 and the larger outliers have mpg above 30.
+```{r}
+df_plot_lowerst <- df_plot[order(df_plot$mpg)[1:5], ]
+df_plot_lowerst
+df_plot_highest <- df_plot[order(-df_plot$mpg)[1:10], ]
+df_plot_highest
+df_plot$mpg_category <- ifelse(df_plot$mpg < 11, "low", ifelse(df_plot$mpg > 30, 'high', 'medium'))
+df_plot$mpg_category <- factor(df_plot$mpg_category)
+```
+
+When plotting the mpg against displacement and weight, it seems like the outliers follow a logical pattern so should not be discarded.
+```{r}
+par(mfrow=c(1, 2), 1)
+plot(
+    y=df_plot$mpg,
+    x=df_plot$disp,
+    col=df_plot$mpg_category,
+    xlab="Displacement",
+    ylab='mpg',
+    main="mpg vs displacement")
+legend(x = 'topright', legend=c('high', 'medium', 'low'), col=c('blue', 'green', 'red'))
+
+plot(
+    y=df_plot$mpg,
+    x=df_plot$wt,
+    col=df_plot$mpg_category,
+    xlab="Weight",
+    ylab='mpg',
+    main="mpg vs weight",
+    text.with=0.2
+    )
+legend(x = 'topright', legend=c('high', 'medium', 'low'), col=c('blue', 'green', 'red'))
+```
+
+
+```{r}
+plotting_variable <- 'mpg'
+other_vars <- colnames(df)[which(plotting_variable != colnames(df))]
+l_other_vars <- length(other_vars)
+matrix_layout <- c(1:l_other_vars)
+
+# if (l_other_vars%%2 == 1){
+#     matrix_layout <- c(matrix_layout, 0)
+# }
+# p <- par
+# par(mfrow=c(ceiling(l_other_vars / 2), 2), mar = rep(2, 4))
+
+
+
+for (var in other_vars){
+    print(var)
+    plot(
+        x=df[, var],
+        y=df[, plotting_variable],
+        xlab=var,
+        ylab=plotting_variable)
+}
+
+# par(p)
+```
+# Model selection
+
+## Model type selection
+The goal i to quantify the relation between mgp and transmission type. To do so the decision was made to use a linear model with at max polynomials to the third degree.  Because mpg is continuous, there is no need for a generalized linear model.
+
+## Model selection strategy
+Model selection is an iterative process in which 
+* Use lasso method (discussed in course 8 of the data science track) to find the next best value for a prediction
+* Use the new variable to fit the residual. For factors just us the factor itself -1, for continous variables test polinomials to the first second and third degree to fit and use anova (with a alpah value < 0.1) to select the best fit
+* Add the selected polinomail to the model fitting mpg and test if the new fit is better than the pervious one using anova
+* If the new fit is better then the previous one then update the residual to be fitted and remove the new fitting variable from the variables it can be fitted with
+
+```{r}
+plot_against_y <- function(df, y_lab="mpg"){
+    plotting_variable <- 'y'
+    other_vars <- colnames(df)[which(plotting_variable != colnames(df))]
+    l_other_vars <- length(other_vars)
+    matrix_layout <- c(1:l_other_vars)
+    
+    if (l_other_vars%%2 == 1){
+        matrix_layout <- c(matrix_layout, 0)
+    }
+    p <- par
+    par(mfrow=c(ceiling(l_other_vars / 2), 2), mar = rep(2, 4))
+    for (var in other_vars){
+        print(var)
+        plot(
+            x=df[, var],
+            y=df[, plotting_variable],
+            xlab=var,
+            ylab=y_lab
+            )
+    }
+    
+    par(p)
+}
+plot_against_y(df_fit)
+```
+```{r}
+lasso_next_variable <- function(df_lasso){
+    lasso_fit <- train(y ~ .-1, data=df_lasso, method='lasso')
+    next_variable <- lasso_fit$finalModel$actions[1]
+    print(next_variable)    
+}
+```
+
+```{r}
+find_fit_type <- function(df, x){
+    if (class(x) == "factor"){
+        print('fit is a factor so return fit1')
+        return(lm(y ~ x - 1, data=df_fit))
+    }
+    fit1 <- lm(y ~ x, data=df_fit)
+    fit2 <- lm(y ~ x + I(x^2), data=df)
+    fit3 <- lm(y ~ x + I(x^2) + I(x^3), data=df)
+    anova_outcome <- anova(fit1, fit2, fit3)
+    print(anova_outcome)
+    
+    if (is.na(anova_outcome$`Pr(>F)`[2])){
+        print('anova for fit2 is NA so use fit1')
+        return(fit1)
+    }
+    else if (anova_outcome$`Pr(>F)`[3] < 0.1){
+        print('fit3 is an improvement')
+        return(fit3)
+    }
+    else if (anova_outcome$`Pr(>F)`[2] < 0.1){
+        print('fit2 is an improvement, use fit2')
+        return(fit2)
+    }
+    else {
+        print('fit1 is the best, use fit1')
+        return(fit1) 
+    }
+}
+
+best_fit <- find_fit_type(df, df$wt)
+```
+
+```{r}
+update_df_fit <- function(df_fit, fitted_column, fit) {
+    df_fit$y <- df_fit$y - predict(fit)
+    columns_to_keep <- colnames(df_fit)[which(fitted_column != colnames(df_fit))]    
+    df_fit <- df_fit[, columns_to_keep]
+    df_fit
+}
+fitted_column <- 'wt'
+
+df_fit <- update_df_fit(df_fit, fitted_column, best_fit)
+```
+
+```{r, message=False, warning=FALSE}
+next_var <- lasso_next_variable(df_fit)
+```
+
+```{r, warnings=FALSE}
+best_fit <- find_fit_type(df_fit, df_fit$hp)
+```
+
+```{r}
+global_best_fit <- lm(y ~ wt + I(wt^2) + hp, data=df)
+previous_best_fit <- lm(y ~ wt + I(wt^2), data=df)
+anova(previous_best_fit, global_best_fit)
+```
+
+```{r, warning=FALSE}
+fitted_column <- 'hp'
+df_fit <- update_df_fit(df_fit, fitted_column, best_fit)
+next_var <- lasso_next_variable(df_fit)
+next_var
+```
+```{r}
+previous_best_fit <- global_best_fit
+best_fit <- find_fit_type(df_fit, df_fit$am)
+```
+
+```{r}
+previous_best_fit <- lm(y ~ wt + I(wt^2) + hp + I(hp^2), data=df)
+global_best_fit <- lm(y ~ wt + I(wt^2) + hp + I(hp^2) + am, data=df)
+anova(previous_best_fit, global_best_fit)
+```
+It an be seen that the value of Pr(>F) is 0.8424, way to high to assume that transmission type has significant influence on the mpg if corrected for weight of the car and hp of the engine.
+
+If we would use the latest fit to interpret the coefficients then we would get:
+```{r}
+summary(lm(y ~ wt + I(wt^2) + hp + I(hp^2) + am, data=df))
+```
+With the average value of weight (wt) and hp an automatic transmission car would burn 50 mpg. Going to manual transmission would save ~0.28 mpg. This number is however not statistically significant.
+
+# Conclusions
+After compensating for weight and hp, manual or automatic transition has no  statistica significant impact on fuel consumption.
+
+Did the student do some exploratory data analyses?
+Did the student do a residual plot and some diagnostics?
+Was the report brief (about 2 pages long) for the main body of the report and no longer than 5 with supporting appendix of figures?
